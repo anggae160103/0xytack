@@ -419,8 +419,9 @@ class _DistributionPageState extends State<DistributionPage> {
   final notesController = TextEditingController();
 
   bool isLoading = true;
-  bool isSaving = false;
-
+bool isSaving = false;
+bool isLoadingStock = false;
+int availableStock = 0;
   @override
   void initState() {
     super.initState();
@@ -463,65 +464,122 @@ class _DistributionPageState extends State<DistributionPage> {
         .where((room) => room['parent_id'] == selectedCentral)
         .toList();
   }
-
-  Future<void> saveDistribution() async {
-    if (selectedCentral == null ||
-        selectedRoom == null ||
-        quantityController.text.trim().isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Lengkapi semua data distribusi')),
-      );
-      return;
-    }
-
-    final quantity = int.tryParse(quantityController.text.trim());
-
-    if (quantity == null || quantity <= 0) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Jumlah tabung harus lebih dari nol')),
-      );
-      return;
-    }
-
+Future<void> loadAvailableStock() async {
+  if (selectedCentral == null) {
     setState(() {
-      isSaving = true;
+      availableStock = 0;
+      isLoadingStock = false;
     });
-
-    try {
-      await supabase.rpc(
-        'distribute_large_cylinder',
-        params: {
-          'p_from_unit_id': selectedCentral,
-          'p_to_unit_id': selectedRoom,
-          'p_status': selectedStatus,
-          'p_quantity': quantity,
-          'p_notes': notesController.text.trim().isEmpty
-              ? null
-              : notesController.text.trim(),
-        },
-      );
-
-      if (!mounted) return;
-
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Distribusi tabung berhasil disimpan')),
-      );
-
-      Navigator.pop(context);
-    } catch (error) {
-      if (!mounted) return;
-
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text('Distribusi gagal: $error')));
-    } finally {
-      if (mounted) {
-        setState(() {
-          isSaving = false;
-        });
-      }
-    }
+    return;
   }
 
+  setState(() {
+    isLoadingStock = true;
+  });
+
+  try {
+    final data = await supabase
+        .from('stock_balances')
+        .select('quantity')
+        .eq('unit_id', selectedCentral!)
+        .eq('item_type', 'Besar')
+        .eq('status', selectedStatus)
+        .maybeSingle();
+
+    if (!mounted) return;
+
+    setState(() {
+      availableStock =
+          data == null ? 0 : (data['quantity'] as num).toInt();
+      isLoadingStock = false;
+    });
+  } catch (error) {
+    if (!mounted) return;
+
+    setState(() {
+      isLoadingStock = false;
+    });
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Gagal memuat stok tersedia: $error')),
+    );
+  }
+}
+  Future<void> saveDistribution() async {
+  if (selectedCentral == null ||
+      selectedRoom == null ||
+      quantityController.text.trim().isEmpty) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Lengkapi semua data distribusi')),
+    );
+    return;
+  }
+
+  final quantity = int.tryParse(quantityController.text.trim());
+
+  if (quantity == null || quantity <= 0) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Jumlah tabung harus lebih dari nol')),
+    );
+    return;
+  }
+
+  if (isLoadingStock) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Tunggu sampai stok selesai dimuat')),
+    );
+    return;
+  }
+
+  if (quantity > availableStock) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          'Stok tidak mencukupi. Stok tersedia hanya $availableStock tabung',
+        ),
+      ),
+    );
+    return;
+  }
+
+  setState(() {
+    isSaving = true;
+  });
+
+  try {
+    await supabase.rpc(
+      'distribute_large_cylinder',
+      params: {
+        'p_from_unit_id': selectedCentral,
+        'p_to_unit_id': selectedRoom,
+        'p_status': selectedStatus,
+        'p_quantity': quantity,
+        'p_notes': notesController.text.trim().isEmpty
+            ? null
+            : notesController.text.trim(),
+      },
+    );
+
+    if (!mounted) return;
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Distribusi tabung berhasil disimpan')),
+    );
+
+    Navigator.pop(context);
+  } catch (error) {
+    if (!mounted) return;
+
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text('Distribusi gagal: $error')));
+  } finally {
+    if (mounted) {
+      setState(() {
+        isSaving = false;
+      });
+    }
+  }
+}
   @override
   void dispose() {
     quantityController.dispose();
@@ -561,13 +619,13 @@ class _DistributionPageState extends State<DistributionPage> {
                         child: Text(unit['name'] as String),
                       );
                     }).toList(),
-                    onChanged: (value) {
-                      setState(() {
-                        selectedCentral = value;
-                        selectedRoom = null;
-                      });
-                    },
-                  ),
+                   onChanged: (value) {
+  setState(() {
+    selectedCentral = value;
+    selectedRoom = null;
+  });
+  loadAvailableStock();
+},
 
                   const SizedBox(height: 20),
 
@@ -609,19 +667,31 @@ class _DistributionPageState extends State<DistributionPage> {
                       DropdownMenuItem(value: 'Full', child: Text('Full')),
                       DropdownMenuItem(value: 'Empty', child: Text('Empty')),
                     ],
-                    onChanged: (value) {
-                      if (value != null) {
-                        setState(() {
-                          selectedStatus = value;
-                        });
-                      }
-                    },
-                  ),
+                   onChanged: (value) {
+  if (value != null) {
+    setState(() {
+      selectedStatus = value;
+    });
+    loadAvailableStock();
+  }
+},
 
                   const SizedBox(height: 20),
 
                   const Text('Jumlah Tabung'),
-                  const SizedBox(height: 8),
+const SizedBox(height: 8),
+
+Text(
+  isLoadingStock
+      ? 'Memuat stok tersedia...'
+      : 'Stok tersedia: $availableStock tabung',
+  style: const TextStyle(
+    fontWeight: FontWeight.bold,
+    color: Colors.green,
+  ),
+),
+
+const SizedBox(height: 8),
 
                   TextField(
                     controller: quantityController,
